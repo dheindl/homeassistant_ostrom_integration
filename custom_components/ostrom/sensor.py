@@ -116,8 +116,9 @@ async def async_setup_entry(
     
     # Add entities before the first refresh
     async_add_entities(entities)
-    
-    # Schedule the first refresh instead of waiting for it
+
+    # Small startup delay so HA's initial burst of API calls is spread out
+    await asyncio.sleep(5)
     await coordinator.async_refresh()
 
 class OstromDataCoordinator(DataUpdateCoordinator):
@@ -150,7 +151,7 @@ class OstromDataCoordinator(DataUpdateCoordinator):
             name="Ostrom Energy",
             manufacturer="Ostrom API",
             model="Price Monitoring",
-            sw_version="1.1.2",
+            sw_version="1.2.0",
         )
         self.contract_id = None
         self._last_historical_fetch: Optional[datetime] = None
@@ -210,9 +211,13 @@ class OstromDataCoordinator(DataUpdateCoordinator):
         """Get access token."""
         try:
             token_data = await get_access_token(self.client_id, self.client_secret, self.environment)
+            if token_data is None:
+                raise UpdateFailed("Ostrom API returned no token data (possibly rate-limited or auth error)")
             self._access_token = token_data["access_token"]
             expires_in = token_data.get("expires_in", 3600)
             self._token_expiration = datetime.now(ZoneInfo("UTC")) + timedelta(seconds=expires_in)
+        except UpdateFailed:
+            raise
         except Exception as e:
             _LOGGER.error("Failed to get access token: %s", str(e))
             raise
