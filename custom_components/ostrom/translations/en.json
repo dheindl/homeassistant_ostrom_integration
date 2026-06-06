@@ -43,6 +43,14 @@
             },
             "ostrom_integration_highest_price_time": {
                 "name": "Highest Price Time"
+            },
+            "ostrom_integration_price_category": {
+                "name": "Price Category",
+                "state": {
+                    "cheap": "Cheap",
+                    "normal": "Normal",
+                    "expensive": "Expensive"
+                }
             }
         }
     },

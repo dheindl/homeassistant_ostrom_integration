@@ -111,6 +111,7 @@ async def async_setup_entry(
         OstromNextPriceSensor(coordinator, entry),
         OstromLowestPriceTimeSensor(coordinator, entry),
         OstromHighestPriceTimeSensor(coordinator, entry),
+        OstromPriceCategorySensor(coordinator, entry),
     ]
     
     # Add entities before the first refresh
@@ -149,7 +150,7 @@ class OstromDataCoordinator(DataUpdateCoordinator):
             name="Ostrom Energy",
             manufacturer="Ostrom API",
             model="Price Monitoring",
-            sw_version="0.8",
+            sw_version="1.1.2",
         )
         self.contract_id = None
         self._last_historical_fetch: Optional[datetime] = None
@@ -168,10 +169,11 @@ class OstromDataCoordinator(DataUpdateCoordinator):
 
             raw_data = await self._fetch_prices()
             processed_data = self._process_price_data(raw_data)
-            
+            await self._store_prices_to_stats(processed_data)
+
             if self.contract_id is None:
                 self.contract_id = await self._fetch_contracts()
-            
+
             await self._fetch_historical_data_if_needed()
 
             _LOGGER.debug("Successfully updated Ostrom price data")
@@ -377,6 +379,32 @@ class OstromDataCoordinator(DataUpdateCoordinator):
                 )
             except Exception as e:
                 _LOGGER.error("Failed to add hourly statistics: %s", e)
+
+    async def _store_prices_to_stats(self, price_data: "PowerPriceData") -> None:
+        """Store forecast spot prices as external statistics for historical charts."""
+        if not price_data or not price_data.prices:
+            return
+
+        statistic_id = f"{DOMAIN}:ostrom_hourly_spot_price"
+        statistics = [
+            StatisticData(start=ts, state=price, mean=price)
+            for ts, price in sorted(price_data.prices.items())
+        ]
+
+        metadata = StatisticMetaData(
+            mean_type=StatisticMeanType.ARITHMETIC,
+            has_sum=False,
+            name="Ostrom Hourly Spot Price",
+            source=DOMAIN,
+            statistic_id=statistic_id,
+            unit_of_measurement="€/kWh",
+        )
+
+        try:
+            async_add_external_statistics(self.hass, metadata, statistics)
+            _LOGGER.debug("Stored %d spot price statistics", len(statistics))
+        except Exception as e:
+            _LOGGER.error("Failed to store spot price statistics: %s", e)
 
     async def _fetch_data_in_chunks(self, start_time, end_time, max_days_per_chunk):
         """Fetch data in chunks of maximum max_days_per_chunk days."""
@@ -811,4 +839,56 @@ class OstromHighestPriceTimeSensor(CoordinatorEntity, SensorEntity):
             "time_date": local_time.strftime("%Y-%m-%d %H:%M:%S %Z"),
             "is_today": local_time.date() == datetime.now(self.coordinator.local_tz).date(),
             "is_tomorrow": local_time.date() == (datetime.now(self.coordinator.local_tz) + timedelta(days=1)).date()
+        }
+
+
+class OstromPriceCategorySensor(CoordinatorEntity, SensorEntity):
+    """Sensor showing current price category relative to today's average."""
+
+    PRICE_CHEAP = "cheap"
+    PRICE_NORMAL = "normal"
+    PRICE_EXPENSIVE = "expensive"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator)
+        self._attr_has_entity_name = True
+        self._attr_translation_key = "ostrom_integration_price_category"
+        self._attr_unique_id = f"ostrom_price_category_{entry.data['zip_code']}"
+        self._attr_device_class = SensorDeviceClass.ENUM
+        self._attr_options = [self.PRICE_CHEAP, self.PRICE_NORMAL, self.PRICE_EXPENSIVE]
+        self._attr_device_info = coordinator.device_info
+
+    @property
+    def native_value(self) -> Optional[str]:
+        data = self.coordinator.data
+        if not data or data.current_price is None or not data._avg_price:
+            return None
+        ratio = data.current_price / data._avg_price
+        if ratio <= 0.85:
+            return self.PRICE_CHEAP
+        if ratio >= 1.15:
+            return self.PRICE_EXPENSIVE
+        return self.PRICE_NORMAL
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        data = self.coordinator.data
+        if not data or data.current_price is None or not data._avg_price:
+            return {}
+
+        now_utc = datetime.now(ZoneInfo("UTC")).replace(minute=0, second=0, microsecond=0)
+        upcoming = sorted(
+            ((ts, p) for ts, p in data.prices.items() if ts >= now_utc),
+            key=lambda x: x[1],
+        )
+        cheapest_hours = [
+            ts.astimezone(self.coordinator.local_tz).isoformat()
+            for ts, _ in upcoming[:3]
+        ]
+
+        return {
+            "current_price": round(data.current_price, 4),
+            "average_price": round(data._avg_price, 4),
+            "ratio": round(data.current_price / data._avg_price, 3),
+            "cheapest_upcoming_hours": cheapest_hours,
         }
