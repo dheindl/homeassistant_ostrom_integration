@@ -123,11 +123,10 @@ class OstromDataCoordinator(DataUpdateCoordinator):
     """Coordinator to fetch Ostrom price data."""
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry):
         """Initialize coordinator."""
-        # Calculate time until next hour
+        # Calculate time until next full hour (minimum 60 seconds)
         now = dt.now()
-        next_hour = (now + timedelta(minutes=SCAN_INTERVAL_MIN)).replace(minute=0, second=0, microsecond=0)
-        # Set initial update interval to time until next hour
-        initial_update_interval = (next_hour - now).total_seconds()
+        next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        initial_update_interval = max(60, (next_hour - now).total_seconds())
 
         super().__init__(
             hass,
@@ -153,6 +152,7 @@ class OstromDataCoordinator(DataUpdateCoordinator):
             sw_version="0.8",
         )
         self.contract_id = None
+        self._last_historical_fetch: Optional[datetime] = None
 
     async def _async_update_data(self) -> PowerPriceData:
         """Fetch and process price data with proper error handling."""
@@ -372,7 +372,7 @@ class OstromDataCoordinator(DataUpdateCoordinator):
 
             try:
                 async_add_external_statistics(self.hass, metadata, statistics)
-                _LOGGER.warning(
+                _LOGGER.debug(
                     "Added %d hourly consumption statistics", len(statistics)
                 )
             except Exception as e:
@@ -382,7 +382,7 @@ class OstromDataCoordinator(DataUpdateCoordinator):
         """Fetch data in chunks of maximum max_days_per_chunk days."""
         current_start = start_time
         consumption_data_all = []
-        _LOGGER.warning("Fetching data in chunks from %s to %s", current_start, end_time)
+        _LOGGER.debug("Fetching data in chunks from %s to %s", current_start, end_time)
 
         while current_start < end_time:
             # Calculate chunk end time (max_days_per_chunk days after current_start or end_time, whichever is smaller)
@@ -391,7 +391,7 @@ class OstromDataCoordinator(DataUpdateCoordinator):
             )
 
             try:
-                _LOGGER.warning("Fetching data chunk from %s to %s", current_start, chunk_end)
+                _LOGGER.debug("Fetching data chunk from %s to %s", current_start, chunk_end)
                 # Fetch data for this chunk
                 consumption_data = await self._fetch_consumption(
                     current_start, chunk_end
@@ -402,8 +402,8 @@ class OstromDataCoordinator(DataUpdateCoordinator):
                     hourly_data = consumption_data["data"]
                     consumption_data_all.extend(hourly_data)
 
-                    _LOGGER.warning(
-                        "Fetched %d hours of delta data from %s to %s",
+                    _LOGGER.debug(
+                        "Fetched %d hours of data from %s to %s",
                         len(hourly_data),
                         current_start,
                         chunk_end,
@@ -432,6 +432,12 @@ class OstromDataCoordinator(DataUpdateCoordinator):
         if not self.contract_id:
             _LOGGER.warning("No contract ID available for historical data fetching")
             return
+
+        now = datetime.now(ZoneInfo("UTC"))
+        if self._last_historical_fetch and (now - self._last_historical_fetch) < timedelta(hours=1):
+            _LOGGER.debug("Skipping historical fetch, last run was %s", self._last_historical_fetch)
+            return
+        self._last_historical_fetch = now
 
         try:
             _LOGGER.debug("Fetching historical data for %s", self.contract_id)
@@ -537,7 +543,15 @@ class OstromDataCoordinator(DataUpdateCoordinator):
                     None,
                     {"sum"},
                 )
-                consumption_sum = cast(float, stats[statistic_id][-1]["sum"])
+                stat_entries = stats.get(statistic_id, [])
+                if not stat_entries:
+                    _LOGGER.warning(
+                        "Statistics period query returned no entries for %s, resetting sum to 0",
+                        statistic_id,
+                    )
+                    consumption_sum = 0.0
+                else:
+                    consumption_sum = cast(float, stat_entries[-1]["sum"])
                 start_time = last_stats_time.astimezone(self.local_tz) + timedelta(hours=1)
             
                 # Fetch data from last recorded time to end_time in chunks
