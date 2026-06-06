@@ -27,6 +27,7 @@ from homeassistant.components.recorder.statistics import (
 from . import DOMAIN
 from .auth import get_access_token
 from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.storage import Store
 
 _LOGGER = logging.getLogger(__name__)
 SCAN_INTERVAL_MIN = 10  # Update more frequently for better graphs
@@ -155,6 +156,7 @@ class OstromDataCoordinator(DataUpdateCoordinator):
         )
         self.contract_id = None
         self._last_historical_fetch: Optional[datetime] = None
+        self._token_store = Store(hass, 1, f"{DOMAIN}_token_{entry.entry_id}")
 
     async def _async_update_data(self) -> PowerPriceData:
         """Fetch and process price data with proper error handling."""
@@ -164,6 +166,9 @@ class OstromDataCoordinator(DataUpdateCoordinator):
             # After each update, set the update interval to 1 hour
             self.update_interval = timedelta(minutes=SCAN_INTERVAL_MIN)
             
+            if not self._access_token:
+                await self._load_cached_token()
+
             if not self._access_token or datetime.now(ZoneInfo("UTC")) >= self._token_expiration:
                 _LOGGER.info("Access token expired or missing, requesting new token")
                 await self._get_access_token()
@@ -207,8 +212,25 @@ class OstromDataCoordinator(DataUpdateCoordinator):
 
         return price_data
 
+    async def _load_cached_token(self):
+        """Load a previously saved token from HA storage if still valid."""
+        try:
+            data = await self._token_store.async_load()
+            if not data:
+                return
+            token = data.get("access_token")
+            expiration_ts = data.get("expiration")
+            if token and expiration_ts:
+                expiration = datetime.fromtimestamp(float(expiration_ts), tz=ZoneInfo("UTC"))
+                if datetime.now(ZoneInfo("UTC")) < expiration:
+                    self._access_token = token
+                    self._token_expiration = expiration
+                    _LOGGER.info("Reused cached token from storage (expires %s)", expiration)
+        except Exception as e:
+            _LOGGER.debug("Could not load cached token: %s", e)
+
     async def _get_access_token(self):
-        """Get access token."""
+        """Get access token and persist it to HA storage."""
         try:
             token_data = await get_access_token(self.client_id, self.client_secret, self.environment)
             if token_data is None:
@@ -216,6 +238,10 @@ class OstromDataCoordinator(DataUpdateCoordinator):
             self._access_token = token_data["access_token"]
             expires_in = token_data.get("expires_in", 3600)
             self._token_expiration = datetime.now(ZoneInfo("UTC")) + timedelta(seconds=expires_in)
+            await self._token_store.async_save({
+                "access_token": self._access_token,
+                "expiration": self._token_expiration.timestamp(),
+            })
         except UpdateFailed:
             raise
         except Exception as e:
