@@ -118,8 +118,6 @@ async def async_setup_entry(
     # Add entities before the first refresh
     async_add_entities(entities)
 
-    # Small startup delay so HA's initial burst of API calls is spread out
-    await asyncio.sleep(5)
     await coordinator.async_refresh()
 
 class OstromDataCoordinator(DataUpdateCoordinator):
