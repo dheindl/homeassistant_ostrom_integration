@@ -30,7 +30,7 @@ from homeassistant.helpers.entity import DeviceInfo
 
 _LOGGER = logging.getLogger(__name__)
 SCAN_INTERVAL_MIN = 10  # Update more frequently for better graphs
-MAX_DAYS_PER_REQUEST = 30 # Max days to use when fetching historical usage data
+MAX_DAYS_PER_REQUEST = 7  # Max days per HOUR-resolution request (Ostrom API limit)
 
 class PowerPriceData:
     """Stores power price data for forecasting."""
@@ -297,7 +297,7 @@ class OstromDataCoordinator(DataUpdateCoordinator):
         params = {
             "startDate": start_datetime_utc.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
             "endDate": end_datetime_utc.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-            "resolution": "DAY",
+            "resolution": "HOUR",
         }
 
         async with aiohttp.ClientSession() as session:
@@ -377,7 +377,7 @@ class OstromDataCoordinator(DataUpdateCoordinator):
             metadata = StatisticMetaData(
                 mean_type=StatisticMeanType.NONE,
                 has_sum=True,
-                name="Ostrom Energy Consumption",
+                name="Ostrom Hourly Energy Consumption",
                 source=DOMAIN,
                 statistic_id=statistic_id,
                 unit_of_measurement=UnitOfEnergy.WATT_HOUR,
@@ -492,9 +492,7 @@ class OstromDataCoordinator(DataUpdateCoordinator):
                 get_last_statistics, self.hass, 1, statistic_id, True, set()
             )
             
-            # Use start of today so we only fetch complete days (DAY resolution)
-            now_local = datetime.now(self.local_tz)
-            end_time = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_time = self._calculate_end_time(24)  # 24h ago from now
 
             consumption_sum = 0.0
             last_stats_time = None
@@ -595,7 +593,7 @@ class OstromDataCoordinator(DataUpdateCoordinator):
                     consumption_sum = 0.0
                 else:
                     consumption_sum = cast(float, stat_entries[-1]["sum"])
-                start_time = last_stats_time.astimezone(self.local_tz) + timedelta(days=1)
+                start_time = last_stats_time.astimezone(self.local_tz) + timedelta(hours=1)
             
                 # Fetch data from last recorded time to end_time in chunks
                 consumption_data_all = await self._fetch_data_in_chunks(
