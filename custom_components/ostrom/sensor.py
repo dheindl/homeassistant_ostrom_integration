@@ -297,7 +297,7 @@ class OstromDataCoordinator(DataUpdateCoordinator):
         params = {
             "startDate": start_datetime_utc.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
             "endDate": end_datetime_utc.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-            "resolution": "HOUR",
+            "resolution": "DAY",
         }
 
         async with aiohttp.ClientSession() as session:
@@ -377,7 +377,7 @@ class OstromDataCoordinator(DataUpdateCoordinator):
             metadata = StatisticMetaData(
                 mean_type=StatisticMeanType.NONE,
                 has_sum=True,
-                name="Ostrom Hourly Energy Consumption",
+                name="Ostrom Energy Consumption",
                 source=DOMAIN,
                 statistic_id=statistic_id,
                 unit_of_measurement=UnitOfEnergy.WATT_HOUR,
@@ -492,8 +492,10 @@ class OstromDataCoordinator(DataUpdateCoordinator):
                 get_last_statistics, self.hass, 1, statistic_id, True, set()
             )
             
-            end_time = self._calculate_end_time(24)  # 24h ago from now
-            
+            # Use start of today so we only fetch complete days (DAY resolution)
+            now_local = datetime.now(self.local_tz)
+            end_time = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+
             consumption_sum = 0.0
             last_stats_time = None
             consumption_data_all = []
@@ -593,7 +595,7 @@ class OstromDataCoordinator(DataUpdateCoordinator):
                     consumption_sum = 0.0
                 else:
                     consumption_sum = cast(float, stat_entries[-1]["sum"])
-                start_time = last_stats_time.astimezone(self.local_tz) + timedelta(hours=1)
+                start_time = last_stats_time.astimezone(self.local_tz) + timedelta(days=1)
             
                 # Fetch data from last recorded time to end_time in chunks
                 consumption_data_all = await self._fetch_data_in_chunks(
