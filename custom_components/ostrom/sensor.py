@@ -151,7 +151,7 @@ class OstromDataCoordinator(DataUpdateCoordinator):
             name="Ostrom Energy",
             manufacturer="Ostrom API",
             model="Price Monitoring",
-            sw_version="1.2.0",
+            sw_version="1.2.1",
         )
         self.contract_id = None
         self._last_historical_fetch: Optional[datetime] = None

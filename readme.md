@@ -153,7 +153,7 @@ logger:
 
 ## 📋 Changelog
 
-### 1.2.0
+### 1.2.1
 - Fix intermittent energy usage data caused by silent crash when statistics query returned empty results
 - Fix negative initial update interval on HA restart within the first minutes of an hour
 - Limit historical data fetch to once per hour to avoid blocking the coordinator
