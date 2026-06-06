@@ -152,7 +152,7 @@ class OstromDataCoordinator(DataUpdateCoordinator):
             name="Ostrom Energy",
             manufacturer="Ostrom API",
             model="Price Monitoring",
-            sw_version="1.2.1",
+            sw_version="1.2.7",
         )
         self.contract_id = None
         self._last_historical_fetch: Optional[datetime] = None
@@ -163,8 +163,10 @@ class OstromDataCoordinator(DataUpdateCoordinator):
         try:
             _LOGGER.debug("Starting data update for Ostrom integration")
             
-            # After each update, set the update interval to 1 hour
-            self.update_interval = timedelta(minutes=SCAN_INTERVAL_MIN)
+            # Schedule next update at the start of the next full hour (min 60 s)
+            now_local = dt.now()
+            next_hour = now_local.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+            self.update_interval = timedelta(seconds=max(60, (next_hour - now_local).total_seconds()))
             
             if not self._access_token:
                 await self._load_cached_token()
@@ -230,11 +232,19 @@ class OstromDataCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("Could not load cached token: %s", e)
 
     async def _get_access_token(self):
-        """Get access token and persist it to HA storage."""
+        """Get access token and persist it to HA storage.
+
+        On 429 rate-limit, get_access_token returns None. If a cached token
+        is still valid we keep using it; otherwise we raise UpdateFailed so
+        the coordinator marks data as unavailable until the next interval.
+        """
         try:
             token_data = await get_access_token(self.client_id, self.client_secret, self.environment)
             if token_data is None:
-                raise UpdateFailed("Ostrom API returned no token data (possibly rate-limited or auth error)")
+                if self._access_token and self._token_expiration and datetime.now(ZoneInfo("UTC")) < self._token_expiration:
+                    _LOGGER.warning("Auth API returned no token (rate-limited?); reusing cached token until %s", self._token_expiration)
+                    return
+                raise UpdateFailed("Ostrom API returned no token data (rate-limited or auth error) and no valid cached token available")
             self._access_token = token_data["access_token"]
             expires_in = token_data.get("expires_in", 3600)
             self._token_expiration = datetime.now(ZoneInfo("UTC")) + timedelta(seconds=expires_in)
