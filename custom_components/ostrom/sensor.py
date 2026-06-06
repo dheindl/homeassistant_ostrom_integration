@@ -321,6 +321,7 @@ class OstromDataCoordinator(DataUpdateCoordinator):
         # hourly_data = consumption_data["data"]
         hourly_data = consumption_data
         if not isinstance(hourly_data, list) or len(hourly_data) == 0:
+            _LOGGER.warning("_store_usage_to_stats called with empty data — nothing to store")
             return
 
         # Create statistics for hourly consumption
@@ -386,9 +387,7 @@ class OstromDataCoordinator(DataUpdateCoordinator):
 
             try:
                 async_add_external_statistics(self.hass, metadata, statistics)
-                _LOGGER.debug(
-                    "Added %d hourly consumption statistics", len(statistics)
-                )
+                _LOGGER.info("Stored %d consumption statistics to recorder", len(statistics))
             except Exception as e:
                 _LOGGER.error("Failed to add hourly statistics: %s", e)
 
@@ -481,7 +480,7 @@ class OstromDataCoordinator(DataUpdateCoordinator):
         self._last_historical_fetch = now
 
         try:
-            _LOGGER.debug("Fetching historical data for %s", self.contract_id)
+            _LOGGER.info("Starting historical consumption fetch for contract %s", self.contract_id)
 
             # Check if we have any statistics for this sensor
             statistic_id = f"{DOMAIN}:ostrom_hourly_consumption_energy"
@@ -491,15 +490,16 @@ class OstromDataCoordinator(DataUpdateCoordinator):
             last_stats = await recorder.async_add_executor_job(
                 get_last_statistics, self.hass, 1, statistic_id, True, set()
             )
-            
+
             end_time = self._calculate_end_time(24)  # 24h ago from now
+            _LOGGER.info("Historical fetch end_time: %s", end_time)
 
             consumption_sum = 0.0
             last_stats_time = None
             consumption_data_all = []
-            
+
             if not last_stats:
-                _LOGGER.debug("Updating statistic for the first time")
+                _LOGGER.info("No existing statistics found — starting full historical load")
                 # usage = await self._async_get_energy_usage(meter)
                 consumption_sum = 0.0
                 last_stats_time = None
@@ -520,15 +520,17 @@ class OstromDataCoordinator(DataUpdateCoordinator):
                             chunk_start, current_end, MAX_DAYS_PER_REQUEST
                         )
                         if len(consumption_data) == 0:
-                            break;
+                            _LOGGER.info("No more historical data before %s, stopping backfill", chunk_start)
+                            break
 
                         consumption_data_all.extend(consumption_data)
 
-                        _LOGGER.debug(
-                            "Fetched %d hours of data from %s to %s",
+                        _LOGGER.info(
+                            "Fetched %d entries from %s to %s (total so far: %d)",
                             len(consumption_data),
                             chunk_start,
                             current_end,
+                            len(consumption_data_all),
                         )
 
                         # Move to the next chunk (earlier time period)
@@ -600,11 +602,16 @@ class OstromDataCoordinator(DataUpdateCoordinator):
                     start_time, end_time, MAX_DAYS_PER_REQUEST
                 )
                 
+            _LOGGER.info(
+                "Historical fetch complete — %d total entries to store (sum base: %.1f Wh)",
+                len(consumption_data_all),
+                consumption_sum,
+            )
             # Store the fetched data
             await self._store_usage_to_stats(consumption_data_all, initial_sum=consumption_sum)
 
         except Exception as e:
-            _LOGGER.error("Error in historical data fetching: %s", e)
+            _LOGGER.error("Error in historical data fetching: %s", e, exc_info=True)
 
 
 class OstromForecastSensor(CoordinatorEntity, SensorEntity):
