@@ -71,7 +71,7 @@ class OstromConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @staticmethod
     def async_get_options_flow(config_entry):
         """Get the options flow for this handler."""
-        return OstromOptionsFlowHandler(config_entry)
+        return OstromOptionsFlowHandler()
 
     def validate_credentials(self, client_id: str, client_secret: str, zip_code: str, environment: str) -> bool:
         """Validate the credentials."""
@@ -118,16 +118,14 @@ class OstromConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 class OstromOptionsFlowHandler(config_entries.OptionsFlow):
     """Handle Ostrom options."""
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.config_entry = config_entry
-
     async def async_step_init(self, user_input=None):
         """Manage the options."""
         errors = {}
 
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            self.hass.config_entries.async_update_entry(self.config_entry, data=user_input)
+            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+            return self.async_create_entry(title="", data={})
 
         schema = vol.Schema({
             vol.Required(
